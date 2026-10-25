@@ -1,0 +1,32 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function admin() {
+      return request.auth != null
+        && request.auth.uid == 'PASTE_TEAM_ADMIN_UID_HERE';
+    }
+    match /raqeebVotes/{visitorId} {
+      allow list: if admin();
+      allow get: if admin() || (request.auth != null && request.auth.uid == visitorId);
+      allow create: if request.auth != null
+        && request.auth.uid == visitorId
+        && request.auth.token.firebase.sign_in_provider == 'anonymous'
+        && request.resource.data.keys().hasOnly([
+          'visitorId','cardNumber','cardTitle','choiceIndex','answerText','submittedAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'visitorId','cardNumber','cardTitle','choiceIndex','answerText','submittedAt'
+        ])
+        && request.resource.data.visitorId == visitorId
+        && request.resource.data.cardNumber is int
+        && request.resource.data.cardNumber >= 1 && request.resource.data.cardNumber <= 10
+        && request.resource.data.choiceIndex is int
+        && request.resource.data.choiceIndex >= 0 && request.resource.data.choiceIndex <= 2
+        && request.resource.data.cardTitle is string && request.resource.data.cardTitle.size() <= 100
+        && request.resource.data.answerText is string && request.resource.data.answerText.size() <= 240
+        && request.resource.data.submittedAt == request.time;
+      allow update, delete: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}
