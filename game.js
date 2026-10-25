@@ -1,7 +1,5 @@
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js';
-import { getAuth, signInAnonymously, setPersistence, browserLocalPersistence } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
-import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
-import { firebaseConfig, firebaseReady } from './firebase-config.js';
+// RAQEEB — visitor game. No paid build step; CDN Firebase is loaded only once configured.
+import {firebaseConfig, firebaseReady} from './firebase-config.js';
 const missions = [
       {icon:'i-wifi',name:'انقطع الاتصال',title:'أنت في زيارة ميدانية… وفجأة انقطع الإنترنت!',question:'كيف تضمن استمرار التوثيق في حل رقمي مناسب للميدان؟',options:['التوقف عن أي توثيق حتى تعود الشبكة','حفظ مسودة محليًا بشكل آمن، ثم مزامنتها لاحقًا','إرسال تفاصيل المنشأة إلى أي هاتف قريب'],correct:1,feedback:'هذه آلية مقترحة لتطوير رقيب مستقبلًا: حفظ آمن محليًا، ثم مزامنة ومراجعة عند عودة الاتصال. لم نثبت تنفيذها الفعلي بعد.'},
       {icon:'i-route',name:'أول زيارة',title:'ثلاث منشآت تنتظر الزيارة… فمن تبدأ بها؟',question:'ما الذي يساعد المشرف على اختيار الأولوية؟',options:['قرب المنشأة وحده','اختيار أي منشأة عشوائيًا','طبيعة البلاغ، السجل، الأولوية، والقرب مع قرار المشرف'],correct:2,feedback:'لا توجد أولوية صحيحة من معلومة واحدة. رقيب يقترح جمع المؤشرات في رؤية تساعد المشرف، ولا تقرر بدلًا عنه.'},
@@ -15,92 +13,127 @@ const missions = [
       {icon:'i-shield',name:'فكرة رقيب',title:'وصلت للمهمة الأخيرة: لماذا فكرنا في رقيب؟',question:'أي وصف أقرب للرؤية التي نعمل عليها؟',options:['استبدال المفتش في اتخاذ القرار','ربط رحلة التفتيش من التخطيط حتى المتابعة','استبدال جميع الأنظمة الحكومية القائمة'],correct:1,feedback:'رقيب نموذج أولي يقترح طبقة تنظيم للعمل الميداني تكمل الأنظمة القائمة، وتُختبر فائدتها قبل أي اعتماد فعلي.'}
     ];
 const $ = id => document.getElementById(id);
-const deck = $('deck');
-const KEY = 'raqeeb-single-answer-2026';
-let state = {stage: 'new', mission: null, choice: null};
-let user = null, db = null, sending = false;
-const icon = name => `<svg class="icon" aria-hidden="true"><use href="#${name}"></use></svg>`;
-function save(){try{localStorage.setItem(KEY,JSON.stringify(state))}catch(e){}}
-function read(){try{const val=JSON.parse(localStorage.getItem(KEY)||'null');if(val&&['new','picked','pending','sent'].includes(val.stage)&& (val.mission===null || Number.isInteger(val.mission)&&val.mission>=0&&val.mission<10)){state=val}}catch(e){} }
-function showMessage(message){ $('noSelection').hidden=false; $('noSelection').textContent=message; }
-function renderDeck(){
+const deck=$('deck');
+const IS_PREVIEW=new URLSearchParams(location.search).has('preview');
+const USE_FIREBASE=firebaseReady && !IS_PREVIEW;
+const KEY=USE_FIREBASE?'raqeeb-real-visit-v3':IS_PREVIEW?'raqeeb-preview-visit-v3':'raqeeb-local-visit-v3';
+let state={stage:'new',mission:null,choice:null};
+let backend=null;
+let user=null;
+let transmitting=false;
+const icon=n=>`<svg class="icon" aria-hidden="true"><use href="#${n}"></use></svg>`;
+function persist(){try{localStorage.setItem(KEY,JSON.stringify(state));}catch{}}
+function restore(){try{const v=JSON.parse(localStorage.getItem(KEY)||'null');if(v&&['new','picked','sending','sent'].includes(v.stage)&&(v.mission===null||Number.isInteger(v.mission)&&v.mission>=0&&v.mission<missions.length))state=v;}catch{}}
+function showDeck(){
   deck.replaceChildren();
-  const blocked=!user||state.stage!=='new';
   deck.classList.toggle('has-picked',state.mission!==null);
   missions.forEach((m,i)=>{
-    const btn=document.createElement('button'); btn.type='button'; btn.className='card'+(state.mission===i?' is-open':'');
-    btn.disabled=blocked;btn.setAttribute('aria-label','البطاقة '+(i+1));
-    btn.innerHTML=`<span class="cardInner"><span class="cardFace cardBack"><span class="smallMark">رقيب</span>${icon('i-spark')}<span class="no">${String(i+1).padStart(2,'0')}</span></span><span class="cardFace cardFront">${icon(m.icon)}<strong>${m.name}</strong></span></span>`;
-    btn.addEventListener('click',()=>pick(i));deck.append(btn);
+    const b=document.createElement('button');
+    b.type='button'; b.className='card'+(state.mission===i?' is-open':'');
+    b.disabled=state.stage!=='new';
+    b.setAttribute('aria-label','البطاقة '+(i+1));
+    b.innerHTML=`<span class="cardInner"><span class="cardFace cardBack"><span class="smallMark">رقيب</span>${icon('i-spark')}<span class="no">${String(i+1).padStart(2,'0')}</span></span><span class="cardFace cardFront">${icon(m.icon)}<strong>${m.name}</strong></span></span>`;
+    b.addEventListener('click',()=>pick(i)); deck.append(b);
   });
 }
 function pick(i){
-  if(!user||state.stage!=='new')return;
-  state={stage:'picked',mission:i,choice:null};save();renderDeck();renderQuestion();
+  if(state.stage!=='new')return;
+  state={stage:'picked',mission:i,choice:null}; persist();showDeck();showQuestion();
 }
-function renderQuestion(){
-  if(!['picked','pending'].includes(state.stage)||state.mission===null)return;
+function showQuestion(){
+  if(state.mission===null||!['picked','sending'].includes(state.stage))return;
   const m=missions[state.mission];
   $('question').classList.remove('hidden');$('noSelection').hidden=true;
-  $('missionIndex').textContent='المهمّة '+String(state.mission+1).padStart(2,'0');
-  $('missionTitle').textContent=m.title;$('missionQuestion').textContent=m.question;
-  const box=$('choices');box.replaceChildren();
-  m.options.forEach((label,i)=>{
-    const b=document.createElement('button');b.type='button';b.className='choice';b.disabled=state.choice!==null;
+  $('missionIndex').textContent='البطاقة '+String(state.mission+1).padStart(2,'0');
+  $('missionTitle').textContent=m.title; $('missionQuestion').textContent=m.question;
+  const c=$('choices');c.replaceChildren();
+  m.options.forEach((option,i)=>{
+    const b=document.createElement('button'); b.type='button';b.className='choice';
+    b.disabled=state.choice!==null;
     b.innerHTML='<span class="radio" aria-hidden="true"></span>';
-    const span=document.createElement('span');span.textContent=label;b.append(span);
-    b.addEventListener('click',()=>answer(i));box.append(b);
+    const t=document.createElement('span');t.textContent=option;b.append(t);
+    b.addEventListener('click',()=>choose(i));
+    if(state.choice===i)b.classList.add('selected');
+    c.append(b);
   });
-  if(state.choice!==null){const b=document.createElement('button');b.type='button';b.className='primary';b.textContent='إعادة إرسال الإجابة';b.addEventListener('click',send);box.append(b);}
-  if(window.matchMedia('(max-width:640px)').matches){requestAnimationFrame(()=>$('question').scrollIntoView({behavior:'smooth',block:'start'}));}
+  if(state.choice!==null && state.stage==='sending'){
+    const button=document.createElement('button');button.className='primary';button.type='button';
+    button.textContent='إعادة إرسال الإجابة';button.addEventListener('click',send); c.append(button);
+  }
+  requestAnimationFrame(()=>{$('question').scrollIntoView({block:'start',behavior:'smooth'});});
 }
-function showFinish(title='شكرًا لمشاركتك!',message='قرارك يضيف للحكاية.',canRetry=false){
+function finish(title='شكرًا لمشاركتك!',subtitle='قرارك يضيف للحكاية.',retry=false){
   document.body.classList.add('ended');$('complete').classList.add('show');
-  $('endTitle').textContent=title;$('endMessage').textContent=message;
-  $('sendNote').hidden=true;$('retryBtn').hidden=!canRetry;
-  $('challenge').scrollIntoView({behavior:'auto',block:'start'});
+  $('endTitle').textContent=title;$('endMessage').textContent=subtitle;
+  $('retryBtn').hidden=!retry;$('sendNote').hidden=true;
+  requestAnimationFrame(()=>$('challenge').scrollIntoView({block:'start',behavior:'smooth'}));
+}
+async function setupFirebase(){
+  if(!USE_FIREBASE)return null;
+  if(backend)return backend;
+  const base='https://www.gstatic.com/firebasejs/11.10.0/';
+  const [appLib,authLib,storeLib]=await Promise.all([
+    import(base+'firebase-app.js'),import(base+'firebase-auth.js'),import(base+'firebase-firestore.js')
+  ]);
+  const app=appLib.initializeApp(firebaseConfig);
+  const auth=authLib.getAuth(app);
+  await authLib.setPersistence(auth,authLib.browserLocalPersistence);
+  await auth.authStateReady();
+  const person=auth.currentUser|| (await authLib.signInAnonymously(auth)).user;
+  if(!person.isAnonymous)throw new Error('not anonymous');
+  user=person;
+  backend={auth,storeLib,db:storeLib.getFirestore(app)};
+  return backend;
 }
 async function send(){
-  if(sending||!db||!user||state.mission===null||!Number.isInteger(state.choice))return;
-  sending=true;
-  state.stage='pending';save();showFinish('جارٍ إرسال الإجابة…','');
-  const m=missions[state.mission];
+  if(transmitting||state.mission===null||!Number.isInteger(state.choice))return;
+  transmitting=true;
+  state.stage='sending';persist();
+  if(!USE_FIREBASE){
+    // Local interaction for reviewing design BEFORE Firebase connection.
+    // No network call, and no statement that the response was received.
+    state.stage='sent';persist();finish();transmitting=false;return;
+  }
+  finish('جارٍ إرسال إجابتك…','');
   try{
-    // Document id is an anonymous Firebase UID: different visitors can choose the same card.
-    // Firestore rules accept CREATE only (no update): one vote per anonymous account.
-    await setDoc(doc(db,'raqeebVotes',user.uid),{
+    const {storeLib,db}=await setupFirebase();
+    const ref=storeLib.doc(db,'raqeebVotes',user.uid);
+    const existing=await storeLib.getDoc(ref);
+    if(existing.exists()){state.stage='sent';persist();finish();return;}
+    const m=missions[state.mission];
+    await storeLib.setDoc(ref,{
       visitorId:user.uid,cardNumber:state.mission+1,cardTitle:m.name,
-      choiceIndex:state.choice,answerText:m.options[state.choice],submittedAt:serverTimestamp()
+      choiceIndex:state.choice,answerText:m.options[state.choice],
+      submittedAt:storeLib.serverTimestamp()
     });
-    state.stage='sent';save();showFinish();
-  }catch(err){
-    try{const already=await getDoc(doc(db,'raqeebVotes',user.uid));if(already.exists()){state.stage='sent';save();showFinish();return}}catch(e){}
-    state.stage='pending';save();
-    showFinish('تعذّر الإرسال','تحقّق من الإنترنت ثم حاول مرة أخرى.',true);
-    console.error('RAQEEB submission failed',err);
-  }finally{sending=false}
+    state.stage='sent';persist();finish();
+  }catch(error){
+    console.error('RAQEEB: submission failed',error);
+    state.stage='sending';persist();
+    finish('لم يكتمل الإرسال','تحقق من الاتصال، ثم جرّب إرسال الإجابة نفسها.',true);
+  }finally{transmitting=false;}
 }
-function answer(i){if(!user||state.stage!=='picked'||state.choice!==null)return;state.choice=i;save();send()}
+function choose(i){
+  if(state.stage!=='picked'||state.choice!==null)return;
+  state.choice=i;persist();send();
+}
 async function init(){
-  read();renderDeck();
-  if(!firebaseReady){showMessage('التحدّي غير متاح مؤقتًا.');return}
-  try{
-    const app=initializeApp(firebaseConfig);db=getFirestore(app);
-    const auth=getAuth(app);
-    await auth.authStateReady();
-    await setPersistence(auth,browserLocalPersistence);
-    user=auth.currentUser??(await signInAnonymously(auth)).user;
-    if(!user.isAnonymous){user=null;showMessage('التحدّي متاح من صفحة الزوار.');return}
-    const vote=await getDoc(doc(db,'raqeebVotes',user.uid));
-    if(vote.exists() || state.stage==='sent'){
-      state.stage='sent';save();showFinish();return;
-    }
-    if(state.stage==='picked') {renderDeck();renderQuestion();return}
-    if(state.stage==='pending' && state.choice!==null){
-      showFinish('لم يكتمل الإرسال','تقدر تعيد إرسال نفس إجابتك.',true);return;
-    }
-    state={stage:'new',mission:null,choice:null};save();renderDeck();showMessage('وراء كل بطاقة حكاية من الميدان.');
-  }catch(error){user=null;renderDeck();showMessage('التحدّي غير متاح مؤقتًا.');console.warn('RAQEEB setup error',error)}
+  restore();
+  // Important: cards are INTERACTIVE without Firebase; it only controls remote submission.
+  // If a real vote has been submitted, the account document persists server-side.
+  if(state.stage==='sent'){finish();showDeck();return;}
+  showDeck();
+  if(state.stage==='picked'){showQuestion();}
+  if(state.stage==='sending'){
+    finish('لم يكتمل الإرسال','جرّب إرسال الإجابة نفسها.',true);
+  }
+  if(USE_FIREBASE){
+    try{
+      const {storeLib,db}=await setupFirebase();
+      const vote=await storeLib.getDoc(storeLib.doc(db,'raqeebVotes',user.uid));
+      if(vote.exists()){state.stage='sent';persist();showDeck();finish();}
+    }catch(error){console.warn('RAQEEB: Firebase unavailable until configured',error);}
+  }
 }
 $('startBtn').addEventListener('click',()=>$('challenge').scrollIntoView({behavior:'smooth',block:'start'}));
 $('retryBtn').addEventListener('click',send);
